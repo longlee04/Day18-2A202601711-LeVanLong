@@ -5,25 +5,58 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# --- LLM Provider (Groq mặc định) ---
-# Groq expose OpenAI-compatible API → vẫn dùng SDK `openai`, chỉ đổi base_url.
-LLM_PROVIDER = os.getenv("LLM_PROVIDER", "groq").lower()
+# --- LLM Provider ---
+# Mọi provider dưới đây đều expose API tương thích OpenAI → chỉ cần đổi
+# base_url + key, KHÔNG phải sửa code gọi LLM ở M4/M5/pipeline.
+#
+# Đổi provider: đặt LLM_PROVIDER trong .env (groq | gemini | cerebras |
+# openrouter | openai), rồi điền key tương ứng. Có thể override LLM_MODEL.
+PROVIDERS = {
+    "groq": {
+        "base_url": "https://api.groq.com/openai/v1",
+        "key_env": "GROQ_API_KEY",
+        # llama-3.3-70b-versatile trả 404 trên account này; qwen3.6-27b rò khối
+        # <think> vào content. gpt-oss-20b output sạch nhưng free tier chỉ
+        # 200k token/ngày/model — không đủ cho 1 lần main.py trọn vẹn (~400k).
+        "model": "openai/gpt-oss-20b",
+    },
+    "gemini": {
+        "base_url": "https://generativelanguage.googleapis.com/v1beta/openai/",
+        "key_env": "GEMINI_API_KEY",
+        "model": "gemini-2.0-flash",
+    },
+    "cerebras": {
+        "base_url": "https://api.cerebras.ai/v1",
+        "key_env": "CEREBRAS_API_KEY",
+        "model": "gpt-oss-120b",
+    },
+    "openrouter": {
+        "base_url": "https://openrouter.ai/api/v1",
+        "key_env": "OPENROUTER_API_KEY",
+        "model": "openai/gpt-oss-120b",
+    },
+    "openai": {
+        "base_url": None,
+        "key_env": "OPENAI_API_KEY",
+        "model": "gpt-4o-mini",
+    },
+}
 
+LLM_PROVIDER = os.getenv("LLM_PROVIDER", "groq").lower()
+if LLM_PROVIDER not in PROVIDERS:
+    raise ValueError(
+        f"LLM_PROVIDER={LLM_PROVIDER!r} không hợp lệ. "
+        f"Chọn một trong: {', '.join(PROVIDERS)}"
+    )
+
+_p = PROVIDERS[LLM_PROVIDER]
+LLM_API_KEY = os.getenv(_p["key_env"], "")
+LLM_BASE_URL = os.getenv("LLM_BASE_URL") or _p["base_url"]
+LLM_MODEL = os.getenv("LLM_MODEL", _p["model"])
+
+# Giữ lại cho code cũ / tương thích ngược
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
-
-if LLM_PROVIDER == "groq":
-    LLM_API_KEY = GROQ_API_KEY
-    LLM_BASE_URL = os.getenv("LLM_BASE_URL", "https://api.groq.com/openai/v1")
-    # [GIẢ ĐỊNH] gpt-oss-20b: llama-3.3-70b-versatile trả 404 trên account này;
-    # gpt-oss-120b chất lượng cao hơn nhưng đã cạn TPD 200k/ngày của free tier;
-    # qwen3.6-27b rò rỉ khối <think> vào content nên không dùng để sinh câu trả lời.
-    # gpt-oss-20b: output sạch, nhanh (~101s/8 RAGAS job, 0 cell lỗi), còn nguyên quota.
-    LLM_MODEL = os.getenv("LLM_MODEL", "openai/gpt-oss-20b")
-else:
-    LLM_API_KEY = OPENAI_API_KEY
-    LLM_BASE_URL = os.getenv("LLM_BASE_URL") or None
-    LLM_MODEL = os.getenv("LLM_MODEL", "gpt-4o-mini")
 
 
 # Groq free tier: TPM thấp (8000 với gpt-oss-120b) → 429 rất thường xuyên.

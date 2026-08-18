@@ -21,9 +21,22 @@
 | Vietnamese tokenization | M2 | `segment_vietnamese()` | `underthesea` nối từ ghép bằng `_` ("nghỉ_phép"). Nếu không `replace("_"," ")` thì query "nghỉ phép" (2 token) không khớp doc ("nghỉ_phép" = 1 token) → BM25 recall về 0. Đây là bẫy lớn nhất của M2. |
 | BM25 + Dense fusion | M2 | `reciprocal_rank_fusion()` | RRF cộng theo **rank** (`1/(k+rank+1)`), không cộng thẳng điểm BM25 (thang ~6.1) với cosine (thang ~0.67) — hai thang khác nhau, cộng trực tiếp thì BM25 nuốt hết tín hiệu dense. Query "nghỉ phép năm": BM25 đưa `nghi_phep_khong_luong.md` lên đầu (khớp từ), dense đưa `nghi_phep_nam_v2023/2024.md` lên đầu (khớp nghĩa); RRF gộp được cả hai. |
 | Cross-encoder reranking | M3 | `CrossEncoderReranker.rerank()` | `BAAI/bge-reranker-v2-m3` trên CPU: **avg 469.7ms / min 462.1ms / max 477.8ms** (5 docs, 5 runs). Test thật: doc nghỉ phép có original_score 0.60 (hạng 3) → rerank_score **0.9958 hạng 1**; doc VPN (original 0.90, hạng 1) bị loại khỏi top-3. Đây là minh chứng rõ nhất "bi-encoder xếp hạng thô, cross-encoder xếp hạng tinh". |
-| RAGAS 4 metrics | M4 | `evaluate_ragas()` | Groq **không có embedding API** → phải truyền `HuggingFaceEmbeddings(bge-m3)` local, nếu không RAGAS fallback sang OpenAI embeddings và chết. `answer_relevancy` mặc định `strictness=3` → gửi `n=3`, Groq trả 400 → hạ về 1. |
+| RAGAS 4 metrics | M4 | `evaluate_ragas()` | Production: faith **0.8783** · ans_rel **0.7817** · ctx_prec **0.9042** · ctx_recall **0.8250** (20/20 câu, 0/80 cell lỗi). Metric thấp nhất là `context_recall` vì pipeline trả child chunk 256 ký tự thay vì parent. Groq **không có embedding API** → phải truyền `HuggingFaceEmbeddings(bge-m3)` local. |
 | Failure diagnostic tree | M4 | `failure_analysis()` | Sort theo trung bình 4 metric, lấy bottom-N, `min()` ra metric tệ nhất rồi map sang (diagnosis, fix). Điểm hay: worst-metric quyết định *sửa ở tầng nào* — recall thấp sửa M1/M2, precision thấp sửa M3, faithfulness thấp sửa prompt. |
 | Contextual embeddings | M5 | `contextual_prepend()` / `_enrich_single_call()` | Dùng **combined mode**: 1 API call/chunk trả JSON gồm summary + questions + context + metadata (thay vì 4 call) → giảm 75% số request, quan trọng vì Groq free tier chỉ 8000 TPM. Fallback offline prepend `"Trích từ {source}."` — vẫn hữu ích cho BM25 vì đưa tên file (v2023/v2024) vào text được index. |
+
+---
+
+### Kết quả cuối cùng
+
+| Metric | Naive | Production | Δ |
+|---|---|---|---|
+| Faithfulness | 0.8367 | **0.8783** | **+0.0417** |
+| Answer Relevancy | 0.7966 | 0.7817 | −0.0149 |
+| Context Precision | 0.9250 | 0.9042 | −0.0208 |
+| Context Recall | 0.9250 | 0.8250 | −0.1000 |
+
+Đi qua 4 vòng eval: 0.6556 → 0.8150 → 0.9043 → **0.8783** faithfulness, mỗi vòng chỉ đổi 1 thứ để quy được nhân quả.
 
 ---
 
@@ -57,6 +70,32 @@
 - **404:** `The model 'llama-3.3-70b-versatile' does not exist or you do not have access to it.` → gọi `client.models.list()` để lấy danh sách thật, chọn `openai/gpt-oss-120b`.
 - **400:** `'n' : number must be at most 1` → `answer_relevancy` gửi `n=strictness=3`; Groq chỉ cho `n=1` → `answer_relevancy.strictness = 1`.
 - **429:** `Rate limit reached ... on tokens per minute (TPM): Limit 8000` → ban đầu chạy `max_workers=4`, hàng loạt job fail thành `NaN`, và code cũ của tôi quy `NaN → 0.0` nên **điểm trung bình bị kéo xuống một cách sai lệch**. Sửa 2 chỗ: (a) `max_retries=8` trên SDK client để tự backoff theo `retry-after`, `max_workers=2`; (b) `NaN → None` và loại khỏi mẫu khi tính trung bình, đồng thời in cảnh báo số cell lỗi. Bài học: **fallback im lặng nguy hiểm hơn crash** — nó tạo ra số liệu trông hợp lệ nhưng sai.
+
+### 3.5. Bug `temperature` — bài học lớn nhất của lab
+
+Lần eval đầu production chỉ đạt faithfulness **0.6556**, thua naive 0.8417. Phản xạ đầu tiên của tôi là nghi hybrid search hoặc reranker làm hỏng, tức nghi sai chỗ.
+
+`failure_analysis()` chỉ ra dữ liệu không khớp giả thuyết đó: 8/10 câu tệ nhất có `worst_metric = faithfulness`, và **3 câu có `context_recall = 1.0` VÀ `context_precision = 1.0` mà `faithfulness = 0.0`**. Retrieval hoàn hảo mà vẫn 0 điểm — nghĩa là lỗi không thể nằm ở M1/M2/M3.
+
+In context thật ra xem: chunk hạng 0 chứa nguyên văn đáp án, hệ thống vẫn trả "Không tìm thấy.". Tôi gọi lại đúng API đó 3 lần với input y hệt:
+
+```
+lần 1: 'Nhân viên thử việc chưa được hưởng gói bảo hiểm sức khỏe PVI.'
+lần 2: 'Không tìm thấy.'
+lần 3: 'Không, nhân viên thử việc chưa được hưởng gói bảo hiểm sức khỏe PVI.'
+```
+
+Không xác định. Nguyên nhân: `client.chat.completions.create(...)` **không set `temperature`** → mặc định 1.0. Refusal ngẫu nhiên ~1/3 số lần, mỗi lần kéo faithfulness và answer_relevancy của câu đó về 0.
+
+Sửa `temperature=0`: faithfulness 0.6556 → **0.8150** (+0.1594), answer_relevancy 0.6617 → **0.7778** (+0.1161), retrieval gần như không đổi (±0.02).
+
+Sau đó còn 2 vòng nữa để cân hai metric chống nhau. Vòng 3 siết prompt "nêu điều kiện trước khi kết luận" → faithfulness lên **0.9043** nhưng answer_relevancy **tụt xuống 0.6809**, thủng ngưỡng 0.70. RAGAS đo answer_relevancy bằng cách sinh ngược câu hỏi từ câu trả lời, nên câu trả lời mở bài dài dòng bị phạt. Vòng 4 đảo thứ tự — câu đầu trả lời thẳng, dẫn chứng đẩy xuống sau, giới hạn 4 câu — được cả hai: faith **0.8783**, ans_rel **0.7817**.
+
+**Bốn điều rút ra:**
+1. Một tham số mặc định không khai báo gây thiệt hại lớn hơn toàn bộ phần thuật toán tôi viết trong 2 giờ.
+2. Metric tổng hợp che giấu nguyên nhân. Chỉ khi tách theo Error Tree — hỏi "context có đúng không" *trước* khi hỏi "answer có đúng không" — mới khoanh được vùng lỗi.
+3. Eval không phải bước cuối để báo cáo điểm, nó là **công cụ debug**. Không có RAGAS thì bug này không bao giờ lộ ra, vì đọc code sẽ không thấy gì sai.
+4. **Tối ưu một metric có thể phá metric khác.** Vòng 3 là cái bẫy: nếu tôi chỉ nhìn faithfulness thì đã dừng ở 0.9043 và không nhận ra answer_relevancy đã thủng ngưỡng. Phải nhìn cả 4 metric cùng lúc ở mỗi vòng.
 
 ### 3.4. Bug tự viết trong `_split_to_size()`
 

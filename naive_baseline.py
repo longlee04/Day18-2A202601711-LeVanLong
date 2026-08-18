@@ -46,8 +46,8 @@ def main():
         if llm_client and contexts:
             try:
                 context_str = "\n\n".join(contexts)
-                resp = llm_client.chat.completions.create(model=LLM_MODEL, messages=[
-                    {"role": "system", "content": "Trả lời CHỈ dựa trên context. Nếu không có → nói 'Không tìm thấy.'"},
+                resp = llm_client.chat.completions.create(model=LLM_MODEL, temperature=0, messages=[
+                    {"role": "system", "content": "Trả lời CHỈ dựa trên context, theo 5 quy tắc:\n1. Câu ĐẦU TIÊN phải trả lời thẳng vào câu hỏi, ngắn gọn, không mở bài.\n2. Các câu sau mới nêu điều kiện/ngưỡng/mốc thời hạn trong context làm căn cứ.\n3. Nếu context có nhiều phiên bản (v1/v2, 2023/2024), dùng bản mới nhất và nói rõ tên phiên bản.\n4. Không đưa số liệu hoặc phép tính không có sẵn trong context.\n5. Chỉ nói 'Không tìm thấy.' khi context thực sự không chứa thông tin trả lời được.\nTối đa 4 câu."},
                     {"role": "user", "content": f"Context:\n{context_str}\n\nCâu hỏi: {item['question']}"},
                 ])
                 answer = resp.choices[0].message.content

@@ -80,7 +80,7 @@ def evaluate_ragas(questions: list[str], answers: list[str],
              "context_precision": 0.0, "context_recall": 0.0, "per_question": []}
 
     from config import (LLM_API_KEY, LLM_BASE_URL, LLM_MODEL, EMBEDDING_MODEL,
-                        MODEL_DEVICE, LLM_MAX_RETRIES, LLM_TIMEOUT)
+                        MODEL_DEVICE, LLM_MAX_RETRIES, LLM_TIMEOUT, LLM_PROVIDER)
 
     if not LLM_API_KEY:
         print("  ⚠️  RAGAS skipped: chưa có API key (GROQ_API_KEY/OPENAI_API_KEY) "
@@ -116,8 +116,11 @@ def evaluate_ragas(questions: list[str], answers: list[str],
             "contexts": contexts, "ground_truth": ground_truths,
         })
         # Giới hạn timeout/retry để 1 câu lỗi không treo cả pipeline
-        # max_workers=2: Groq free tier chỉ 8000 TPM — nhiều worker chỉ tạo thêm 429.
-        run_config = RunConfig(timeout=180, max_retries=10, max_wait=60, max_workers=2)
+        # Groq free tier chỉ 8000 TPM → phải hạ worker; OpenAI rộng hơn nhiều nên
+        # song song cao hơn. Chỉnh bằng RAGAS_WORKERS nếu bị 429.
+        _workers = int(os.getenv("RAGAS_WORKERS", "2" if LLM_PROVIDER == "groq" else "8"))
+        run_config = RunConfig(timeout=180, max_retries=10, max_wait=60,
+                               max_workers=_workers)
         result = evaluate(
             dataset,
             metrics=[faithfulness, answer_relevancy, context_precision, context_recall],

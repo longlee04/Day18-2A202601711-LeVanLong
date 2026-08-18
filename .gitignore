@@ -6,3 +6,7 @@ __pycache__/
 qdrant_data/
 *.egg-info/
 reports/*.json
+# ...nhưng 2 report này là deliverable bắt buộc (README + RUBRIC) → phải push
+!reports/ragas_report.json
+!reports/naive_baseline_report.json
+.cache/

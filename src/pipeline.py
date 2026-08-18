@@ -69,8 +69,10 @@ def run_query(query: str, search: HybridSearch, reranker: CrossEncoderReranker) 
         try:
             client = get_llm_client()
             context_str = "\n\n".join(contexts)
-            resp = client.chat.completions.create(model=LLM_MODEL, messages=[
-                {"role": "system", "content": "Trả lời CHỈ dựa trên context. Nếu không có → nói 'Không tìm thấy.'"},
+            # temperature=0: mặc định 1.0 khiến cùng 1 context cho ra "Không tìm thấy."
+            # ngẫu nhiên ~1/3 số lần → faithfulness & answer_relevancy sập về 0.
+            resp = client.chat.completions.create(model=LLM_MODEL, temperature=0, messages=[
+                {"role": "system", "content": "Trả lời CHỈ dựa trên context, theo 5 quy tắc:\n1. Câu ĐẦU TIÊN phải trả lời thẳng vào câu hỏi, ngắn gọn, không mở bài.\n2. Các câu sau mới nêu điều kiện/ngưỡng/mốc thời hạn trong context làm căn cứ.\n3. Nếu context có nhiều phiên bản (v1/v2, 2023/2024), dùng bản mới nhất và nói rõ tên phiên bản.\n4. Không đưa số liệu hoặc phép tính không có sẵn trong context.\n5. Chỉ nói 'Không tìm thấy.' khi context thực sự không chứa thông tin trả lời được.\nTối đa 4 câu."},
                 {"role": "user", "content": f"Context:\n{context_str}\n\nCâu hỏi: {query}"},
             ])
             answer = resp.choices[0].message.content

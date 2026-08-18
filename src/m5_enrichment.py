@@ -55,6 +55,34 @@ def _chat(system: str, user: str, max_tokens: int, json_mode: bool = False) -> s
         return None
 
 
+_CACHE_PATH = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".cache",
+    f"enrichment_{LLM_MODEL.replace('/', '_')}.json")
+_CACHE: dict | None = None
+
+
+def _cache_get(key: str):
+    """Cache enrichment trên đĩa: đổi prompt/generation không phải trả tiền
+    enrich lại 105 chunk (~6 phút + phí API)."""
+    global _CACHE
+    if _CACHE is None:
+        try:
+            with open(_CACHE_PATH, encoding="utf-8") as f:
+                _CACHE = _json.load(f)
+        except (FileNotFoundError, _json.JSONDecodeError):
+            _CACHE = {}
+    return _CACHE.get(key)
+
+
+def _cache_put(key: str, value: dict) -> None:
+    if _CACHE is None:
+        return
+    _CACHE[key] = value
+    os.makedirs(os.path.dirname(_CACHE_PATH), exist_ok=True)
+    with open(_CACHE_PATH, "w", encoding="utf-8") as f:
+        _json.dump(_CACHE, f, ensure_ascii=False)
+
+
 def _strip_reserved(meta: dict) -> dict:
     """Metadata do LLM sinh KHÔNG được ghi đè `source` — đó là bằng chứng để
     xử lý xung đột phiên bản (v2023 vs v2024)."""
@@ -153,6 +181,13 @@ def _enrich_single_call(text: str, source: str) -> dict:
 
     ⚠️ Cost optimization: 1 API call thay vì 4 calls riêng lẻ.
     """
+    import hashlib
+
+    ckey = hashlib.sha256(f"{source}\x00{text}".encode()).hexdigest()
+    cached = _cache_get(ckey)
+    if cached is not None:
+        return cached
+
     out = _chat(
         """Phân tích đoạn văn và chỉ trả về JSON:
 {
@@ -167,6 +202,7 @@ def _enrich_single_call(text: str, source: str) -> dict:
         try:
             data = _json.loads(out)
             data["metadata"] = _strip_reserved(data.get("metadata", {}))
+            _cache_put(ckey, data)
             return data
         except _json.JSONDecodeError as e:
             print(f"  ⚠️  Enrichment JSON parse failed: {e}")
